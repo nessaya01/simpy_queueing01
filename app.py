@@ -10,7 +10,7 @@ from collections import defaultdict
 from scipy import stats
 
 st.set_page_config(layout="wide")
-st.title("Discrete-Event Simulation Dashboard")
+st.title("Discrete-Event Simulation Dashboard, by L.Herrera & D. Goldsman"). May 2025.
 
 # Sidebar inputs
 st.sidebar.header("Simulation Settings")
