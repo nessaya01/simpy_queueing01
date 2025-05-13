@@ -21,6 +21,41 @@ RENEGE_TIME = st.sidebar.number_input("Max wait before reneging", min_value=1, v
 AGING_THRESHOLD = st.sidebar.number_input("Aging threshold (min)", min_value=1, value=5)
 MIN_PRIORITY = st.sidebar.number_input("Minimum priority (0 = highest)", min_value=0, value=0)
 
+# Entity type configuration
+st.sidebar.header("Entity Types")
+num_types = st.sidebar.number_input("Number of entity types", min_value=1, max_value=5, value=2)
+
+entity_types_config = []
+total_prob = 0
+
+for i in range(num_types):
+    with st.sidebar.expander(f"Entity Type {i+1}"):
+        name = st.text_input(f"Name {i+1}", value=f"Type{i+1}", key=f"name_{i}")
+        priority = st.number_input(f"Priority (0=highest) {i+1}", min_value=0, value=i, key=f"prio_{i}")
+        service_time = st.number_input(f"Avg Service Time {i+1} (minutes)", min_value=0.1, value=6.0 - i*1.5, key=f"st_{i}")
+        prob = st.slider(f"Arrival Probability {i+1}", min_value=0.0, max_value=1.0, value=round(1.0/num_types, 2), step=0.01, key=f"prob_{i}")
+        entity_types_config.append({"name": name, "priority": int(priority), "service_time": service_time, "prob": prob})
+        total_prob += prob
+
+# Normalize probabilities
+if total_prob > 0:
+    for etype in entity_types_config:
+        etype["prob"] /= total_prob
+
+# Visualize arrival mix
+st.sidebar.subheader("Arrival Mix Visualization")
+
+if entity_types_config:
+    labels = [etype["name"] for etype in entity_types_config]
+    values = [etype["prob"] for etype in entity_types_config]
+
+    fig, ax = plt.subplots(figsize=(3, 2))
+    ax.barh(labels, values, color="skyblue")
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Probability")
+    ax.set_title("Arrival Mix")
+    st.sidebar.pyplot(fig)
+
 # Button to run the simulation
 run_simulation = st.sidebar.button("Run Simulation")
 
@@ -128,6 +163,114 @@ if run_simulation:
 
     results = [run_single_sim(i + 1) for i in range(REPLICATIONS)]
     df = pd.DataFrame(results)
-    st.success("Simulation complete.")
+    if df.empty:
+        st.error("No simulation results recorded. Try increasing simulation time or reducing reneging behavior.")
+    else:
+        st.success("Simulation complete.")
 
-    # Additional blocks (3 and 4) would continue here...
+    st.subheader("🔍 Debug: Raw Entity Logs")
+    if entity_logs_all:
+        st.dataframe(pd.DataFrame(entity_logs_all))
+    else:
+        st.warning("No entities were created or all entities reneged.")
+
+    # ----------------------------
+    # Display Summary Table
+    # ----------------------------
+    st.subheader("Summary Table (All Replications)")
+    st.dataframe(df.style.format(precision=2))
+
+    # ----------------------------
+    # Entity-Type Aggregation Table
+    # ----------------------------
+    st.subheader("Aggregated Metrics by Entity Type")
+    type_summary = {}
+    for col in df.columns:
+        if "_AvgWait" in col or "_AvgService" in col or "_AvgTotal" in col or "_Count" in col:
+            label = col.split("_")[0]
+            if label not in type_summary:
+                type_summary[label] = {"Count": 0, "Avg Wait": [], "Avg Service": [], "Avg Total": []}
+            if "_AvgWait" in col:
+                type_summary[label]["Avg Wait"] += list(df[col].dropna())
+            elif "_AvgService" in col:
+                type_summary[label]["Avg Service"] += list(df[col].dropna())
+            elif "_AvgTotal" in col:
+                type_summary[label]["Avg Total"] += list(df[col].dropna())
+            elif "_Count" in col:
+                type_summary[label]["Count"] += df[col].sum()
+
+    rows = []
+    for label, metrics in type_summary.items():
+        rows.append({
+            "Type": label,
+            "Total Served": metrics["Count"],
+            "Avg Wait": round(np.mean(metrics["Avg Wait"]), 2) if metrics["Avg Wait"] else None,
+            "Avg Service": round(np.mean(metrics["Avg Service"]), 2) if metrics["Avg Service"] else None,
+            "Avg Total": round(np.mean(metrics["Avg Total"]), 2) if metrics["Avg Total"] else None,
+        })
+    st.dataframe(pd.DataFrame(rows))
+
+    # ----------------------------
+    # Plot Metrics per Replication
+    # ----------------------------
+    st.subheader("Plots: Metrics Across Replications")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for col in df.columns:
+        if col.endswith("_AvgWait") or col.endswith("_AvgService") or col.endswith("_AvgTotal"):
+            ax.plot(df["Replication"], df[col], label=col, marker='o')
+    if "AgedEntities" in df.columns:
+        ax.plot(df["Replication"], df["AgedEntities"], label="Aged Entities", linestyle='--', marker='x')
+
+    ax.set_xlabel("Replication")
+    ax.set_ylabel("Metric Value")
+    ax.set_title("Performance Metrics by Replication")
+    ax.grid(True)
+    ax.legend()
+    st.pyplot(fig)
+
+    # ----------------------------
+    # Optional CSV Export
+    # ----------------------------
+    st.subheader("Download Results")
+    filebase = st.text_input("Base filename (no extension)", value="simulation_output")
+
+    if st.button("Export to CSV"):
+        df.to_csv(f"{filebase}.csv", index=False)
+        st.success(f"Saved: {filebase}.csv")
+
+    # ----------------------------
+    # Gantt-style Entity Timeline Plot
+    # ----------------------------
+    st.subheader("Entity-Level Gantt Chart")
+
+    rep_to_animate = st.number_input("Replication number to animate (1 to N)", min_value=1, max_value=REPLICATIONS, value=1)
+
+    if entity_logs_all:
+        gantt_df = pd.DataFrame([log for log in entity_logs_all if log["Replication"] == rep_to_animate])
+        if not gantt_df.empty:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            colors = {etype: plt.cm.tab10(i) for i, etype in enumerate(gantt_df["Type"].unique())}
+            yticks = []
+            ylabels = []
+
+            for i, row in gantt_df.iterrows():
+                y = i
+                yticks.append(y)
+                ylabels.append(f"{row['Type']}-{row['EntityID']}")
+                if row.get("Reneged"):
+                    ax.plot(row["ArrivalTime"], y, 'rx', markersize=8)
+                elif pd.notnull(row.get("StartService")) and pd.notnull(row.get("EndService")):
+                    ax.broken_barh([(row["StartService"], row["EndService"] - row["StartService"])],
+                                   (y - 0.4, 0.8),
+                                   facecolors=colors.get(row["Type"], "gray"))
+
+            ax.set_yticks(yticks)
+            ax.set_yticklabels(ylabels, fontsize=8)
+            ax.set_xlabel("Simulation Time")
+            ax.set_title(f"Gantt Chart: Replication {rep_to_animate}")
+            ax.grid(True)
+            st.pyplot(fig)
+        else:
+            st.warning("No data available for the selected replication.")
+    else:
+        st.warning("Entity log is not available. Run the simulation first.")
